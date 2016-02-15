@@ -199,17 +199,23 @@ func showData(d map[string]interface{}) {
 
 		if data, ok := val.(map[string]interface{}); ok {
 			for k, v := range data {
+				value[k] = fmt.Sprintf("%s", reflect.TypeOf(v))
 				if iv, ok := v.([]interface{}); ok {
+					// []interface{}
 					data := map[string]interface{}{}
 					for i, mv := range iv {
 						data[fmt.Sprintf("%03d-%s|%s", i, pk, k)] = mv
 					}
 					defer showData(data)
-					value[k] = fmt.Sprintf("%s", reflect.TypeOf(v))
+				} else if mv, ok := v.(map[string]interface{}); ok {
+					// map[string]interface{}
+					data := map[string]interface{}{}
+					data[fmt.Sprintf("%s|%s", pk, k)] = mv
+					defer showData(data)
 				} else if sv, ok := v.(string); ok {
+					// string
 					value[k] = sv
 				}
-
 			}
 		}
 	}
