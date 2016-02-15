@@ -8,14 +8,75 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/boltdb/bolt"
 	"github.com/olekukonko/tablewriter"
 )
 
-var db *bolt.DB
+var (
+	db     *bolt.DB
+	bucket string
+)
+
+type Record struct {
+	key   string
+	value *map[string]string
+}
+
+type Table struct {
+	rows []Record
+}
+
+func (r *Table) renderTable() {
+
+	sort.Sort(r)
+
+	keys := []string{}
+	data := [][]string{}
+
+	for _, row := range r.rows {
+
+		val := *row.value
+
+		if len(keys) == 0 {
+			keys = append(keys, "primary key")
+			for k := range val {
+				keys = append(keys, k)
+			}
+		}
+
+		// for _, k := range keys {
+		// 	if k == "primary key" {
+		// 		log.Println(row.key)
+		// 	} else {
+		// 		log.Println(val[k])
+		// 	}
+		// }
+
+		d := []string{}
+		for _, k := range keys {
+			if k == "primary key" {
+				d = append(d, row.key)
+			} else {
+				d = append(d, val[k])
+			}
+		}
+		data = append(data, d)
+	}
+
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader(keys)
+	table.AppendBulk(data)
+	table.Render()
+}
+
+func (r *Table) Len() int           { return len(r.rows) }
+func (r *Table) Swap(i, j int)      { r.rows[i], r.rows[j] = r.rows[j], r.rows[i] }
+func (r *Table) Less(i, j int) bool { return r.rows[i].key < r.rows[j].key }
 
 func main() {
 
@@ -47,16 +108,31 @@ func main() {
 				resv <- false
 			} else {
 				c := strings.TrimSpace(strings.TrimRight(string(cmd), "\n"))
+				if c == "" {
+					continue
+				}
 				if c == "show buckets" {
 					showBucketList()
+				} else if matches := regexp.MustCompile(`^use=([a-zA-Z0-9]*)$`).FindStringSubmatch(c); matches != nil {
+					bucket = matches[1]
+				} else if matches := regexp.MustCompile(`^key=(.*)$`).FindStringSubmatch(c); matches != nil {
+					if bucket == "" {
+						fmt.Println("Selected bucket")
+					} else {
+						if err := findData(bucket, matches[1]); err != nil {
+							fmt.Println(err.Error())
+						}
+					}
 				} else if matches := regexp.MustCompile(`^bucket=([a-zA-Z0-9]*)\skey=(.*)`).FindStringSubmatch(c); matches != nil {
-					if err := showData(matches[1], matches[2]); err != nil {
+					if err := findData(matches[1], matches[2]); err != nil {
 						fmt.Println(err.Error())
 					}
-				} else if matches := regexp.MustCompile(`^bucket=([a-zA-Z0-9]*)$`).FindStringSubmatch(c); matches != nil {
-					if err := showData(matches[1], ""); err != nil {
-						fmt.Println(err.Error())
-					}
+					// } else if matches := regexp.MustCompile(`^bucket=([a-zA-Z0-9]*)$`).FindStringSubmatch(c); matches != nil {
+					// 	if err := findData(matches[1], ""); err != nil {
+					// 		fmt.Println(err.Error())
+					// 	}
+				} else if c == "quit" {
+					resv <- false
 				} else {
 					fmt.Printf("Command not found: %s", string(cmd))
 				}
@@ -66,7 +142,7 @@ func main() {
 
 	for s := range resv {
 		if !s {
-			fmt.Println("Quit...")
+			fmt.Println("Exit...")
 			close(resv)
 		}
 	}
@@ -82,7 +158,7 @@ func showBucketList() {
 	})
 }
 
-func showData(backetName string, key string) error {
+func findData(backetName string, key string) error {
 	var bucket *bolt.Bucket
 	return db.View(func(tx *bolt.Tx) error {
 		tx.ForEach(func(name []byte, b *bolt.Bucket) error {
@@ -96,48 +172,47 @@ func showData(backetName string, key string) error {
 			return errors.New("bucket not found")
 		}
 
-		keys := []string{}
-		data := [][]string{}
 		c := bucket.Cursor()
 		prefix := []byte(key)
+		data := map[string]interface{}{}
 
 		for pk, v := c.Seek(prefix); bytes.HasPrefix(pk, prefix); pk, v = c.Next() {
-
-			u := map[string]string{}
+			u := map[string]interface{}{}
 			json.Unmarshal(v, &u)
-
-			if len(keys) == 0 {
-				keys = append(keys, "primary key")
-				for k := range u {
-					keys = append(keys, k)
-				}
-			}
-
-			d := []string{}
-			for _, k := range keys {
-				if k == "primary key" {
-					d = append(d, string(pk))
-				} else {
-					d = append(d, u[k])
-				}
-			}
-
-			data = append(data, d)
+			data[string(pk)] = u
 		}
 
-		if len(data) == 0 {
-			fmt.Println()
-		} else {
-			renderTable(keys, data)
-		}
-
+		showData(data)
 		return nil
 	})
 }
 
-func renderTable(header []string, data [][]string) {
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader(header)
-	table.AppendBulk(data)
-	table.Render()
+func showData(d map[string]interface{}) {
+
+	table := Table{rows: []Record{}}
+
+	for pk, val := range d {
+
+		value := map[string]string{}
+		record := Record{key: pk, value: &value}
+		table.rows = append(table.rows, record)
+
+		if data, ok := val.(map[string]interface{}); ok {
+			for k, v := range data {
+				if iv, ok := v.([]interface{}); ok {
+					data := map[string]interface{}{}
+					for i, mv := range iv {
+						data[fmt.Sprintf("%03d-%s|%s", i, pk, k)] = mv
+					}
+					defer showData(data)
+					value[k] = fmt.Sprintf("%s", reflect.TypeOf(v))
+				} else if sv, ok := v.(string); ok {
+					value[k] = sv
+				}
+
+			}
+		}
+	}
+
+	table.renderTable()
 }
