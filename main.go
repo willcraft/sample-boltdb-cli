@@ -22,6 +22,11 @@ var (
 	bucket string
 )
 
+type Option struct {
+	key    string
+	params map[string]string
+}
+
 type Record struct {
 	key   string
 	value *map[string]string
@@ -49,14 +54,6 @@ func (r *Table) renderTable() {
 			}
 		}
 
-		// for _, k := range keys {
-		// 	if k == "primary key" {
-		// 		log.Println(row.key)
-		// 	} else {
-		// 		log.Println(val[k])
-		// 	}
-		// }
-
 		d := []string{}
 		for _, k := range keys {
 			if k == "primary key" {
@@ -69,6 +66,8 @@ func (r *Table) renderTable() {
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
+	table.SetAutoFormatHeaders(false)
+	table.SetRowLine(true)
 	table.SetHeader(keys)
 	table.AppendBulk(data)
 	table.Render()
@@ -115,22 +114,26 @@ func main() {
 					showBucketList()
 				} else if matches := regexp.MustCompile(`^use=([a-zA-Z0-9]*)$`).FindStringSubmatch(c); matches != nil {
 					bucket = matches[1]
+				} else if matches := regexp.MustCompile(`^key=(.*)\s([a-zA-Z0-9]*)=(.*)$`).FindStringSubmatch(c); matches != nil {
+					if bucket == "" {
+						fmt.Println("Selected bucket")
+					} else {
+						if err := findData(bucket, Option{key: matches[1], params: map[string]string{matches[2]: matches[3]}}); err != nil {
+							fmt.Println(err.Error())
+						}
+					}
 				} else if matches := regexp.MustCompile(`^key=(.*)$`).FindStringSubmatch(c); matches != nil {
 					if bucket == "" {
 						fmt.Println("Selected bucket")
 					} else {
-						if err := findData(bucket, matches[1]); err != nil {
+						if err := findData(bucket, Option{key: matches[1]}); err != nil {
 							fmt.Println(err.Error())
 						}
 					}
 				} else if matches := regexp.MustCompile(`^bucket=([a-zA-Z0-9]*)\skey=(.*)`).FindStringSubmatch(c); matches != nil {
-					if err := findData(matches[1], matches[2]); err != nil {
+					if err := findData(matches[1], Option{key: matches[2]}); err != nil {
 						fmt.Println(err.Error())
 					}
-					// } else if matches := regexp.MustCompile(`^bucket=([a-zA-Z0-9]*)$`).FindStringSubmatch(c); matches != nil {
-					// 	if err := findData(matches[1], ""); err != nil {
-					// 		fmt.Println(err.Error())
-					// 	}
 				} else if c == "quit" {
 					resv <- false
 				} else {
@@ -158,7 +161,7 @@ func showBucketList() {
 	})
 }
 
-func findData(backetName string, key string) error {
+func findData(backetName string, option Option) error {
 	var bucket *bolt.Bucket
 	return db.View(func(tx *bolt.Tx) error {
 		tx.ForEach(func(name []byte, b *bolt.Bucket) error {
@@ -167,18 +170,22 @@ func findData(backetName string, key string) error {
 			}
 			return nil
 		})
-
 		if bucket == nil {
 			return errors.New("bucket not found")
 		}
-
 		c := bucket.Cursor()
-		prefix := []byte(key)
+		prefix := []byte(option.key)
 		data := map[string]interface{}{}
 
+	OUTER:
 		for pk, v := c.Seek(prefix); bytes.HasPrefix(pk, prefix); pk, v = c.Next() {
 			u := map[string]interface{}{}
 			json.Unmarshal(v, &u)
+			for fk, fv := range option.params {
+				if u[fk] != fv {
+					continue OUTER
+				}
+			}
 			data[string(pk)] = u
 		}
 
